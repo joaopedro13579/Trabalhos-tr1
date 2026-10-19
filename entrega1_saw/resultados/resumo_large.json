@@ -1,0 +1,20 @@
+{
+  "grupo": "grupo14",
+  "arquivo": "large",
+  "file_size": 8388608,
+  "bytes_recebidos": 8388608,
+  "total_segments": 16384,
+  "segment_size": 512,
+  "timeout_s": 1.0,
+  "checksum_esperado": "3532660d6cda042f71c0182546b73471",
+  "checksum_recebido": "3532660d6cda042f71c0182546b73471",
+  "checksum_ok": true,
+  "duracao_s": 552.1322711599933,
+  "rtt_medio_ms": 13.896092051839837,
+  "rtt_min_ms": 10.595202998956665,
+  "rtt_max_ms": 38.630873008514754,
+  "retransmissoes_total": 320,
+  "throughput_teorico_bps": 294759.1297409182,
+  "throughput_medido_bps": 121544.90419299116,
+  "eficiencia": 0.41235331472115694
+}
