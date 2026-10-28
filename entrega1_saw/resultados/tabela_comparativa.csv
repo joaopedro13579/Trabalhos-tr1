@@ -1,5 +1,0 @@
-arquivo,segmentos,rtt_medio_ms,thr_teorico_kbps,thr_medido_kbps,thr_medio_por_seg_kbps,eficiencia_pct,retransmissoes,duracao_s,md5,md5_ok
-small,2048,13.82,296.39,106.34,297.93,35.9,50,78.88,98762a6d2c03451fb4ec14d610161ed3,sim
-medium,8192,13.91,294.51,119.77,297.00,40.7,164,280.15,0fd5822caecf634ea586ca2016d1dfaa,sim
-large,16384,13.90,294.76,121.54,297.45,41.2,320,552.13,3532660d6cda042f71c0182546b73471,sim
-big,2048,13.94,293.87,139.59,297.34,47.5,31,60.09,069790db1e79cb80900d1642ad3ac24e,sim

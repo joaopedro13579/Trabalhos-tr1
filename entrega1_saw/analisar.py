@@ -1,533 +1,351 @@
+#!/usr/bin/env python3
+"""Análise comparativa dos resultados SAW, GBN e SR do cliente.py.
 
+Uso: python3 analisar.py [--dir resultados] [--protocol saw|gbn|sr]
+API: Analise_completa(pasta='resultados', protocolo=None)
 """
-Gera gráficos por segmento e tabelas comparativas para SAW, GBN e SR.
-
-Uso:
-    python3 analisar.py
-    python3 analisar.py --dir outra_pasta
-
-Os arquivos de métricas e resumos devem ser gerados pelo cliente.py.
-O protocolo pode ser identificado pelo campo "protocol"/"protocolo"
-no JSON ou pelo prefixo do nome do arquivo.
-"""
-
 import argparse
 import csv
 import glob
 import json
 import os
+from collections import defaultdict
 
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-
-AZUL = "#2a78d6"
-AZUL_CLARO = "#9ec5f4"
-VERMELHO = "#d03b3b"
-VERDE = "#27864b"
-TINTA = "#0b0b0b"
-TINTA_2 = "#52514e"
-GRADE = "#e4e3df"
-
-ORDEM = ["small", "medium", "large"]
-PROTOCOLOS = ["saw", "gbn", "sr"]
+PROTOCOLOS = ('saw', 'gbn', 'sr')
+CORES = {'saw': '#277da1', 'gbn': '#f8961e', 'sr': '#43aa8b'}
+COLUNAS = [
+    'protocolo', 'arquivo', 'janela', 'erro_configurado', 'segmentos',
+    'rtt_medio_ms', 'thr_referencia_saw_kbps', 'thr_medido_kbps',
+    'ganho_vs_saw', 'retransmissoes', 'timeouts_segmentos',
+    'perdas_simuladas', 'duracao_s', 'bytes_recebidos', 'md5_ok', 'md5',
+]
 
 
-def identificar_protocolo(nome, resumo):
-    """Identifica o protocolo utilizado na transferência."""
-    protocolo = resumo.get("protocol", resumo.get("protocolo", ""))
-
-    if protocolo:
-        protocolo = str(protocolo).lower().strip()
-        if protocolo in PROTOCOLOS:
-            return protocolo
-
-    nome_lower = nome.lower()
-
-    for protocolo in PROTOCOLOS:
-        if nome_lower.startswith(protocolo + "_"):
-            return protocolo
-
-    # Compatibilidade com os resultados antigos, que eram somente SAW.
-    return "saw"
+def numero(valor, padrao=0.0):
+    try:
+        return float(valor)
+    except (ValueError, TypeError):
+        return float(padrao)
 
 
 def ler_csv(caminho):
-    """Lê métricas por segmento, incluindo perda simulada se disponível."""
-    with open(caminho, newline="", encoding="utf-8") as f:
+    with open(caminho, newline='', encoding='utf-8') as f:
         linhas = list(csv.DictReader(f))
-
     if not linhas:
-        raise ValueError(f"O CSV está vazio: {caminho}")
-
-    def valor(linha, campo, padrao=0.0, tipo=float):
-        dado = linha.get(campo, "")
-        if dado is None or str(dado).strip() == "":
-            return tipo(padrao)
-        return tipo(dado)
-
+        raise ValueError(f'CSV vazio: {caminho}')
+    linhas.sort(key=lambda r: int(numero(r.get('seq'))))
     return {
-        "seq": [
-            valor(l, "seq", tipo=int) for l in linhas
-        ],
-        "rtt_ms": [
-            valor(l, "rtt_ms") for l in linhas
-        ],
-        "thr_kbps": [
-            valor(l, "throughput_bps") / 1e3 for l in linhas
-        ],
-        "timeout": [
-            valor(l, "timeout_ocorrido", tipo=int) for l in linhas
-        ],
-        "retx": [
-            valor(l, "retransmissoes", tipo=int) for l in linhas
-        ],
-        "perda_simulada": [
-            valor(l, "perda_simulada", tipo=int) for l in linhas
-        ],
+        'seq': [int(numero(r.get('seq'))) for r in linhas],
+        'rtt_ms': [numero(r.get('rtt_ms')) for r in linhas],
+        'thr_kbps': [numero(r.get('throughput_bps')) / 1000 for r in linhas],
+        'retx': [int(numero(r.get('retransmissoes'))) for r in linhas],
+        'timeout': [int(numero(r.get('timeout_ocorrido'))) for r in linhas],
+        'perda_simulada': [int(numero(r.get('perda_simulada', r.get('simulated_loss')))) for r in linhas],
+        'tempo_ciclo_ms': [numero(r.get('tempo_ciclo_ms')) for r in linhas],
     }
 
 
 def media_movel(valores, janela):
-    """Calcula a média móvel de uma lista."""
-    if not valores:
-        return []
-
-    janela = max(1, min(janela, len(valores)))
-    saida = []
-    soma = 0.0
-
-    for i, v in enumerate(valores):
-        soma += v
-
+    janela = max(1, int(janela))
+    resultado = []
+    acumulado = 0.0
+    for i, valor in enumerate(valores):
+        acumulado += valor
         if i >= janela:
-            soma -= valores[i - janela]
-
-        saida.append(soma / min(i + 1, janela))
-
-    return saida
+            acumulado -= valores[i - janela]
+        resultado.append(acumulado / min(i + 1, janela))
+    return resultado
 
 
-def estilo(ax):
-    """Aplica estilo aos eixos do gráfico."""
-    for lado in ("top", "right"):
-        ax.spines[lado].set_visible(False)
-
-    for lado in ("left", "bottom"):
-        ax.spines[lado].set_color(TINTA_2)
-
-    ax.tick_params(colors=TINTA_2, labelsize=8)
-    ax.grid(axis="y", color=GRADE, linewidth=0.8)
-    ax.set_axisbelow(True)
+def identificar_protocolo(caminho, resumo):
+    p = str(resumo.get('protocolo') or resumo.get('protocol') or '').lower()
+    if p in PROTOCOLOS:
+        return p
+    nome = os.path.basename(caminho).lower()
+    for candidato in PROTOCOLOS:
+        if nome.startswith(f'resumo_{candidato}_'):
+            return candidato
+    return 'saw'  # arquivos legados sem identificação
 
 
-def grafico(arquivo, d, resumo, pasta, protocolo):
-    """Gera gráfico de throughput e RTT por segmento."""
-    seq = d["seq"]
-
-    if not seq:
-        raise ValueError(f"Não há segmentos para gerar o gráfico de {arquivo}")
-
-    janela = max(10, len(seq) // 100)
-
-    fig, (ax1, ax2) = plt.subplots(
-        2,
-        1,
-        figsize=(8, 5.8),
-        sharex=True,
-        gridspec_kw={"hspace": 0.2},
-    )
-
-    fig.patch.set_facecolor("#fcfcfb")
-
-    # Throughput por segmento
-    ax1.plot(
-        seq,
-        d["thr_kbps"],
-        color=AZUL_CLARO,
-        linewidth=0.7,
-        label="Por segmento",
-    )
-
-    ax1.plot(
-        seq,
-        media_movel(d["thr_kbps"], janela),
-        color=AZUL,
-        linewidth=2,
-        label=f"Média móvel ({janela} seg.)",
-    )
-
-    thr_teo = float(resumo.get("throughput_teorico_bps", 0)) / 1e3
-
-    if thr_teo > 0:
-        ax1.axhline(
-            thr_teo,
-            color=TINTA_2,
-            linewidth=1,
-            linestyle="--",
-            label=f"Teórico: {thr_teo:.2f} kbps",
-        )
-
-    ax1.set_ylabel("Throughput (kbps)", fontsize=9, color=TINTA)
-    ax1.set_ylim(bottom=0)
-
-    # RTT por segmento
-    ax2.plot(
-        seq,
-        d["rtt_ms"],
-        color=AZUL_CLARO,
-        linewidth=0.7,
-        label="RTT por segmento",
-    )
-
-    ax2.plot(
-        seq,
-        media_movel(d["rtt_ms"], janela),
-        color=AZUL,
-        linewidth=2,
-        label="Média móvel",
-    )
-
-    rtt_medio = float(resumo.get("rtt_medio_ms", 0))
-
-    if rtt_medio > 0:
-        ax2.axhline(
-            rtt_medio,
-            color=TINTA_2,
-            linewidth=1,
-            linestyle="--",
-            label=f"Média geral: {rtt_medio:.2f} ms",
-        )
-
-    ax2.set_ylabel("RTT (ms)", fontsize=9, color=TINTA)
-    ax2.set_xlabel("Número de sequência do segmento", fontsize=9, color=TINTA)
-    ax2.set_ylim(bottom=0)
-
-    # Marca segmentos que tiveram timeout
-    indice = {s: i for i, s in enumerate(seq)}
-
-    seq_timeout = [
-        s for s, t in zip(seq, d["timeout"]) if t
+def localizar_csv(pasta, caminho_json, protocolo, arquivo):
+    base = os.path.basename(caminho_json)
+    sufixo = base[len('resumo_'):-len('.json')]
+    candidatos = [
+        os.path.join(pasta, f'metricas_{sufixo}.csv'),
+        os.path.join(pasta, f'metricas_{protocolo}_{arquivo}.csv'),
+        os.path.join(pasta, f'metricas_{arquivo}.csv'),
     ]
+    return next((c for c in candidatos if os.path.isfile(c)), None)
 
-    if seq_timeout:
-        thr_timeout = [
-            d["thr_kbps"][indice[s]] for s in seq_timeout
-        ]
 
-        rtt_timeout = [
-            d["rtt_ms"][indice[s]] for s in seq_timeout
-        ]
-
-        ax1.scatter(
-            seq_timeout,
-            thr_timeout,
-            s=22,
-            color=VERMELHO,
-            zorder=3,
-            edgecolors="#fcfcfb",
-            linewidths=0.7,
-            label=f"Timeout ({len(seq_timeout)} seg.)",
-        )
-
-        ax2.scatter(
-            seq_timeout,
-            rtt_timeout,
-            s=22,
-            color=VERMELHO,
-            zorder=3,
-            edgecolors="#fcfcfb",
-            linewidths=0.7,
-        )
-
-    # Marca perdas simuladas, se registradas no CSV
-    seq_perda = [
-        s for s, perda in zip(seq, d["perda_simulada"]) if perda
-    ]
-
-    if seq_perda:
-        thr_perda = [
-            d["thr_kbps"][indice[s]] for s in seq_perda
-        ]
-
-        rtt_perda = [
-            d["rtt_ms"][indice[s]] for s in seq_perda
-        ]
-
-        ax1.scatter(
-            seq_perda,
-            thr_perda,
-            s=28,
-            marker="x",
-            color=VERDE,
-            zorder=4,
-            label=f"Perda simulada ({len(seq_perda)} seg.)",
-        )
-
-        ax2.scatter(
-            seq_perda,
-            rtt_perda,
-            s=28,
-            marker="x",
-            color=VERDE,
-            zorder=4,
-        )
-
-    for ax in (ax1, ax2):
-        estilo(ax)
-        ax.set_facecolor("#fcfcfb")
-
-    ax1.legend(
-        loc="lower left",
-        bbox_to_anchor=(0, 1.0),
-        fontsize=7,
-        frameon=False,
-        ncol=2,
-    )
-
-    fig.suptitle(
-        f"{protocolo.upper()}: throughput e RTT por segmento "
-        f"({arquivo}, {resumo.get('segment_size', '?')} B/seg, "
-        f"{len(seq)} segmentos)",
-        fontsize=10,
-        color=TINTA,
-        x=0.125,
-        y=0.99,
-        ha="left",
-    )
-
-    caminho = os.path.join(
-        pasta,
-        f"grafico_{protocolo}_{arquivo}.png",
-    )
-
-    fig.savefig(caminho, dpi=200, bbox_inches="tight")
+def grafico(arquivo, dados, resumo, pasta, protocolo):
+    seq = dados['seq']
+    janela_media = max(5, len(seq) // 100)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+    cor = CORES[protocolo]
+    for ax, chave, titulo, unidade in (
+        (ax1, 'thr_kbps', 'Throughput por segmento', 'kbps'),
+        (ax2, 'rtt_ms', 'RTT por segmento', 'ms'),
+    ):
+        valores = dados[chave]
+        ax.plot(seq, valores, color=cor, alpha=0.3, lw=0.7, label='Por segmento')
+        ax.plot(seq, media_movel(valores, janela_media), color=cor, lw=1.8,
+                label=f'Média móvel ({janela_media})')
+        indices_timeout = [i for i, x in enumerate(dados['timeout']) if x]
+        if indices_timeout:
+            ax.scatter([seq[i] for i in indices_timeout],
+                       [valores[i] for i in indices_timeout],
+                       s=15, c='#d62828', label='Timeout', zorder=3)
+        indices_perda = [i for i, x in enumerate(dados['perda_simulada']) if x]
+        if indices_perda:
+            ax.scatter([seq[i] for i in indices_perda],
+                       [valores[i] for i in indices_perda],
+                       s=20, marker='x', c='#6a4c93', label='Perda simulada', zorder=4)
+        ax.set_title(titulo)
+        ax.set_ylabel(unidade)
+        ax.grid(alpha=0.25)
+        ax.legend(fontsize=8)
+    ax2.set_xlabel('Número de sequência')
+    fig.suptitle(f'{protocolo.upper()} | {arquivo} | janela={resumo.get("window", 1)} '
+                 f'| erro={numero(resumo.get("error")):.1%}')
+    fig.tight_layout()
+    nome = os.path.basename(arquivo).replace('/', '_').replace('\\', '_')
+    janela = resumo.get('window', 1)
+    erro = numero(resumo.get('error'))
+    caminho = os.path.join(pasta, f'grafico_{protocolo}_{nome}_w{janela}_p{erro:.3f}.png')
+    fig.savefig(caminho, dpi=160, bbox_inches='tight')
     plt.close(fig)
-
     return caminho
 
 
-def carregar_resumos(pasta):
-    """Carrega os resumos JSON encontrados na pasta."""
-    resumos = {}
+def grafico_comparativo(linhas, pasta, campo, ylabel, nome):
+    """Compara execuções sem misturar tamanhos de janela diferentes."""
+    grupos = sorted({(l['arquivo'], l['erro_configurado'], str(l['janela']))
+                    for l in linhas})
+    if not grupos:
+        return None
+    fig, ax = plt.subplots(figsize=(max(10, len(grupos) * 1.65), 5.5))
+    largura = 0.24
+    desenhou = False
+    for j, protocolo in enumerate(PROTOCOLOS):
+        posicoes, valores = [], []
+        for i, (arquivo, erro, janela) in enumerate(grupos):
+            # SAW (janela 1) é referência para todas as janelas do mesmo teste.
+            candidatos = [l for l in linhas if l['arquivo'] == arquivo
+                          and l['erro_configurado'] == erro
+                          and l['protocolo'] == protocolo
+                          and (protocolo == 'saw' or str(l['janela']) == janela)]
+            if not candidatos:
+                continue
+            valores_validos = [numero(l[campo]) for l in candidatos if l[campo] != '']
+            if not valores_validos:
+                continue
+            posicoes.append(i + (j - 1) * largura)
+            valores.append(sum(valores_validos) / len(valores_validos))
+        if valores:
+            ax.bar(posicoes, valores, largura, color=CORES[protocolo], label=protocolo.upper())
+            desenhou = True
+    if not desenhou:
+        plt.close(fig)
+        return None
+    ax.set_xticks(range(len(grupos)), [f'{a}\nperda={e:.0%} | janela={w}' for a,e,w in grupos])
+    ax.set_ylabel(ylabel)
+    ax.set_title(f'SAW × GBN × SR — {ylabel}')
+    ax.grid(axis='y', alpha=0.2)
+    ax.set_axisbelow(True)
+    ax.legend()
+    fig.tight_layout()
+    caminho = os.path.join(pasta, nome)
+    fig.savefig(caminho, dpi=180, bbox_inches='tight')
+    plt.close(fig)
+    return caminho
 
-    padrao = os.path.join(pasta, "resumo_*.json")
 
-    for caminho in glob.glob(padrao):
-        try:
-            with open(caminho, encoding="utf-8") as f:
-                resumo = json.load(f)
-        except (OSError, json.JSONDecodeError) as erro:
-            print(f"Aviso: não foi possível ler {caminho}: {erro}")
+def grafico_sobreposto(registros, pasta, arquivo, erro, janela, campo, titulo, unidade):
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    for protocolo in PROTOCOLOS:
+        candidatos = [r for r in registros if r['protocolo'] == protocolo
+                      and r['arquivo'] == arquivo and r['erro'] == erro
+                      and (protocolo == 'saw' or str(r['janela']) == str(janela))]
+        if not candidatos:
             continue
+        dados = candidatos[0]['dados']
+        ax.plot(dados['seq'], media_movel(dados[campo], max(5, len(dados['seq']) // 100)),
+                label=protocolo.upper(), color=CORES[protocolo], linewidth=1.6)
+    if not ax.lines:
+        plt.close(fig)
+        return None
+    ax.set_xlabel('Número do segmento')
+    ax.set_ylabel(unidade)
+    ax.set_title(f'{titulo} — {arquivo} | perda={erro:.0%} | janela={janela}')
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    arquivo_seguro = ''.join(c if c.isalnum() or c in '-_' else '_' for c in arquivo)
+    caminho = os.path.join(pasta, f'comparacao_segmentos_{campo}_{arquivo_seguro}_p{erro:.3f}_w{janela}.png')
+    fig.savefig(caminho, dpi=180, bbox_inches='tight')
+    plt.close(fig)
+    return caminho
 
-        nome = resumo.get("arquivo")
 
-        if not nome:
-            # Compatibilidade com nomes como resumo_saw_small.json.
-            base = os.path.basename(caminho)
-            nome = base[len("resumo_"):-len(".json")]
+def salvar_tabelas(linhas, pasta):
+    csv_saida = os.path.join(pasta, 'tabela_comparativa.csv')
+    with open(csv_saida, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=COLUNAS)
+        writer.writeheader()
+        writer.writerows(linhas)
+    md_saida = os.path.join(pasta, 'tabela_comparativa.md')
+    with open(md_saida, 'w', encoding='utf-8') as f:
+        f.write('| ' + ' | '.join(COLUNAS) + ' |\n')
+        f.write('| ' + ' | '.join(['---'] * len(COLUNAS)) + ' |\n')
+        for linha in linhas:
+            f.write('| ' + ' | '.join(str(linha[c]) for c in COLUNAS) + ' |\n')
+    return csv_saida, md_saida
 
-        resumos[nome] = resumo
 
-    return resumos
+def Analise_completa(pasta='resultados', protocolo=None):
+    """Analisa todos os protocolos, gera gráficos e tabelas e devolve caminhos.
+
+    Pode ser chamada por cliente.py com Analise_completa(args.out).
+    """
+    if protocolo is not None and protocolo not in PROTOCOLOS:
+        raise ValueError(f'Protocolo inválido: {protocolo}')
+    if not os.path.isdir(pasta):
+        raise FileNotFoundError(f'Pasta não encontrada: {pasta}')
+    saida = {'saw': [], 'gbn': [], 'sr': [], 'comparativos': [], 'tabelas': []}
+    linhas = []
+    registros = []
+    for caminho_json in sorted(glob.glob(os.path.join(pasta, 'resumo_*.json'))):
+        try:
+            with open(caminho_json, encoding='utf-8') as f:
+                resumo = json.load(f)
+            p = identificar_protocolo(caminho_json, resumo)
+            if protocolo is not None and p != protocolo:
+                continue
+            arquivo = str(resumo.get('arquivo') or os.path.basename(caminho_json)[7:-5])
+            caminho_csv = localizar_csv(pasta, caminho_json, p, arquivo)
+            if not caminho_csv:
+                print(f'Aviso: CSV não encontrado para {caminho_json}')
+                continue
+            dados = ler_csv(caminho_csv)
+            registros.append({'protocolo': p, 'arquivo': arquivo,
+                              'erro': numero(resumo.get('error')),
+                              'janela': resumo.get('window', 1 if p == 'saw' else '?'),
+                              'dados': dados})
+            graf = grafico(arquivo, dados, resumo, pasta, p)
+            saida[p].append(graf)
+            thr_medido = numero(resumo.get('throughput_medido_bps')) / 1000
+            thr_ref = numero(resumo.get('throughput_teorico_bps')) / 1000
+            linhas.append({
+                'protocolo': p, 'arquivo': arquivo,
+                'janela': resumo.get('window', 1 if p == 'saw' else '?'),
+                'erro_configurado': numero(resumo.get('error')),
+                'segmentos': resumo.get('total_segments', len(dados['seq'])),
+                'rtt_medio_ms': round(numero(resumo.get('rtt_medio_ms')), 3),
+                # É a referência registrada pelo cliente; não é o limite físico da rede.
+                'thr_referencia_saw_kbps': round(thr_ref, 3),
+                'thr_medido_kbps': round(thr_medido, 3),
+                'ganho_vs_saw': '',
+                'retransmissoes': resumo.get('retransmissoes_total', sum(dados['retx'])),
+                'timeouts_segmentos': sum(1 for x in dados['timeout'] if x),
+                'perdas_simuladas': resumo.get('perdas_simuladas_total', sum(dados['perda_simulada'])),
+                'duracao_s': round(numero(resumo.get('duracao_s')), 3),
+                'bytes_recebidos': resumo.get('bytes_recebidos', 0),
+                'md5_ok': resumo.get('checksum_ok', False),
+                'md5': resumo.get('checksum_recebido', ''),
+            })
+            print(f'Gráfico gerado: {graf}')
+        except (OSError, ValueError, KeyError, csv.Error, json.JSONDecodeError) as erro:
+            print(f'Aviso: não foi possível analisar {caminho_json}: {erro}')
+    if not linhas:
+        print(f'Nenhum resultado válido encontrado em {pasta}')
+        return saida
+
+    # Compara somente resultados do mesmo arquivo e das mesmas condições de teste.
+    referencia = {}
+    for linha in linhas:
+        if linha['protocolo'] == 'saw':
+            chave = (linha['arquivo'], linha['erro_configurado'])
+            referencia[chave] = numero(linha['thr_medido_kbps'])
+    for linha in linhas:
+        chave = (linha['arquivo'], linha['erro_configurado'])
+        saw = referencia.get(chave, 0)
+        if saw > 0:
+            linha['ganho_vs_saw'] = round(numero(linha['thr_medido_kbps']) / saw, 3)
+
+    linhas.sort(key=lambda l: (l['arquivo'], l['erro_configurado'],
+                               PROTOCOLOS.index(l['protocolo']), str(l['janela'])))
+    saida['tabelas'] = list(salvar_tabelas(linhas, pasta))
+    if protocolo is None:
+        grupos = sorted({(r['arquivo'], r['erro'], str(r['janela'])) for r in registros
+                        if r['protocolo'] != 'saw'})
+        for arquivo, erro, janela in grupos:
+            for campo, titulo, unidade in (
+                ('thr_kbps', 'Throughput por segmento', 'kbps'),
+                ('rtt_ms', 'RTT por segmento', 'ms'),
+                ('retx', 'Retransmissões por segmento', 'quantidade'),
+            ):
+                caminho = grafico_sobreposto(registros, pasta, arquivo, erro,
+                                            janela, campo, titulo, unidade)
+                if caminho:
+                    saida['comparativos'].append(caminho)
+        for campo, ylabel, nome in (
+            ('thr_medido_kbps', 'Throughput medido (kbps)', 'comparacao_throughput.png'),
+            ('rtt_medio_ms', 'RTT médio (ms)', 'comparacao_rtt.png'),
+            ('duracao_s', 'Duração (s)', 'comparacao_duracao.png'),
+            ('retransmissoes', 'Retransmissões', 'comparacao_retransmissoes.png'),
+            ('timeouts_segmentos', 'Segmentos com timeout', 'comparacao_timeouts.png'),
+            ('perdas_simuladas', 'Perdas simuladas', 'comparacao_perdas.png'),
+            ('ganho_vs_saw', 'Ganho de throughput em relação ao SAW (×)', 'comparacao_ganho_vs_saw.png'),
+        ):
+            caminho = grafico_comparativo(linhas, pasta, campo, ylabel, nome)
+            if caminho:
+                saida['comparativos'].append(caminho)
+    # Matriz obrigatória da Entrega 2: uma linha por protocolo/janela.
+    for arquivo in sorted({l['arquivo'] for l in linhas}):
+        matriz = []
+        for prot, jan in [('saw', 1)] + [(p, w) for p in ('gbn', 'sr') for w in (4, 8, 16)]:
+            linha = {'protocolo': prot.upper(), 'janela': jan, 'arquivo': arquivo}
+            for perda in (0.0, 0.05, 0.10):
+                dados = next((l for l in linhas if l['arquivo'] == arquivo
+                              and l['protocolo'] == prot
+                              and int(l['janela']) == jan
+                              and abs(l['erro_configurado'] - perda) < 0.0001), None)
+                prefixo = f'p{int(perda*100):02d}'
+                linha[f'{prefixo}_throughput_kbps'] = dados['thr_medido_kbps'] if dados else ''
+                linha[f'{prefixo}_retransmissoes'] = dados['retransmissoes'] if dados else ''
+                linha[f'{prefixo}_duracao_s'] = dados['duracao_s'] if dados else ''
+                linha[f'{prefixo}_md5_ok'] = dados['md5_ok'] if dados else ''
+            matriz.append(linha)
+        caminho_matriz = os.path.join(pasta, f'matriz_entrega2_{arquivo}.csv')
+        with open(caminho_matriz, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=matriz[0].keys())
+            writer.writeheader()
+            writer.writerows(matriz)
+        saida['tabelas'].append(caminho_matriz)
+        print(f'Matriz de 21 cenários: {caminho_matriz}')
+    print(f'Tabelas: {saida["tabelas"]}')
+    print('Gráficos individuais:', sum(len(saida[p]) for p in PROTOCOLOS))
+    print('Gráficos comparativos:', len(saida['comparativos']))
+    return saida
+
+
+def analisar_todos_protocolos(pasta='resultados'):
+    return Analise_completa(pasta)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Gera gráficos e tabelas comparativas para SAW, GBN e SR."
-        )
-    )
-
-    parser.add_argument(
-        "--dir",
-        default="resultados",
-        help="Pasta que contém os CSVs e JSONs.",
-    )
-
-    parser.add_argument(
-        "--protocol",
-        choices=PROTOCOLOS,
-        default=None,
-        help="Analisa somente um protocolo específico.",
-    )
-
+    parser = argparse.ArgumentParser(description='Análise SAW, GBN e SR')
+    parser.add_argument('--dir', default='resultados')
+    parser.add_argument('--protocol', choices=PROTOCOLOS)
     args = parser.parse_args()
-    pasta = args.dir
-
-    if not os.path.isdir(pasta):
-        print(f"Erro: a pasta '{pasta}' não existe.")
-        return
-
-    resumos = carregar_resumos(pasta)
-
-    if not resumos:
-        print(f"Nenhum resumo JSON encontrado em '{pasta}/'.")
-        print("Execute o cliente.py antes de analisar os resultados.")
-        return
-
-    linhas = []
-
-    for nome, resumo in resumos.items():
-        protocolo = identificar_protocolo(nome, resumo)
-
-        if args.protocol and protocolo != args.protocol:
-            continue
-
-        # Aceita dois padrões de nome:
-        # metricas_small.csv
-        # metricas_saw_small.csv
-        candidatos = [
-            os.path.join(pasta, f"metricas_{nome}.csv"),
-        ]
-
-        if not nome.startswith(protocolo + "_"):
-            candidatos.append(
-                os.path.join(pasta, f"metricas_{protocolo}_{nome}.csv")
-            )
-
-        caminho_csv = next(
-            (c for c in candidatos if os.path.isfile(c)),
-            None,
-        )
-
-        if caminho_csv is None:
-            print(
-                f"Aviso: CSV não encontrado para '{nome}' "
-                f"(protocolo {protocolo.upper()})."
-            )
-            continue
-
-        try:
-            d = ler_csv(caminho_csv)
-        except (OSError, ValueError, csv.Error) as erro:
-            print(f"Aviso: erro ao ler {caminho_csv}: {erro}")
-            continue
-
-        png = grafico(nome, d, resumo, pasta, protocolo)
-        print(f"Gráfico: {png}")
-
-        media_seg = sum(d["thr_kbps"]) / len(d["thr_kbps"])
-
-        thr_teorico = float(
-            resumo.get("throughput_teorico_bps", 0)
-        )
-
-        thr_medido = float(
-            resumo.get("throughput_medido_bps", 0)
-        )
-
-        eficiencia = resumo.get("eficiencia")
-
-        if eficiencia is None:
-            eficiencia = (
-                thr_medido / thr_teorico
-                if thr_teorico > 0
-                else 0
-            )
-
-        linhas.append({
-            "protocolo": protocolo.upper(),
-            "arquivo": nome,
-            "segmentos": resumo.get("total_segments", len(d["seq"])),
-            "rtt_medio_ms": (
-                f"{float(resumo.get('rtt_medio_ms', 0)):.2f}"
-            ),
-            "thr_teorico_kbps": f"{thr_teorico / 1e3:.2f}",
-            "thr_medido_kbps": f"{thr_medido / 1e3:.2f}",
-            "thr_medio_por_seg_kbps": f"{media_seg:.2f}",
-            "eficiencia_pct": f"{100 * float(eficiencia):.1f}",
-            "retransmissoes": resumo.get(
-                "retransmissoes_total",
-                sum(d["retx"]),
-            ),
-            "timeouts_csv": sum(1 for t in d["timeout"] if t),
-            "perdas_simuladas_csv": sum(d["perda_simulada"]),
-            "duracao_s": f"{float(resumo.get('duracao_s', 0)):.2f}",
-            "md5": resumo.get("checksum_recebido", ""),
-            "md5_ok": (
-                "sim" if resumo.get("checksum_ok") else "NÃO"
-            ),
-        })
-
-    if not linhas:
-        print("Nenhum conjunto de resultados pôde ser analisado.")
-        print(
-            "Confira se os nomes dos arquivos CSV correspondem "
-            "aos nomes dos resumos JSON."
-        )
-        return
-
-    # Tabela comparativa CSV
-    caminho_csv = os.path.join(pasta, "tabela_comparativa.csv")
-
-    with open(caminho_csv, "w", newline="", encoding="utf-8") as f:
-        escritor = csv.DictWriter(
-            f,
-            fieldnames=list(linhas[0].keys()),
-        )
-        escritor.writeheader()
-        escritor.writerows(linhas)
-
-    # Tabela Markdown para o relatório
-    cabecalhos = [
-        "Protocolo",
-        "Arquivo",
-        "Seg.",
-        "RTT médio (ms)",
-        "Teórico (kbps)",
-        "Medido (kbps)",
-        "Média por seg. (kbps)",
-        "Eficiência",
-        "Retx.",
-        "Timeouts",
-        "Perdas simuladas",
-        "Tempo (s)",
-        "MD5 OK",
-    ]
-
-    markdown = [
-        "| " + " | ".join(cabecalhos) + " |",
-        "|" + "|".join(["---"] * len(cabecalhos)) + "|",
-    ]
-
-    for linha in linhas:
-        markdown.append("| " + " | ".join([
-            linha["protocolo"],
-            str(linha["arquivo"]),
-            str(linha["segmentos"]),
-            linha["rtt_medio_ms"],
-            linha["thr_teorico_kbps"],
-            linha["thr_medido_kbps"],
-            linha["thr_medio_por_seg_kbps"],
-            linha["eficiencia_pct"] + "%",
-            str(linha["retransmissoes"]),
-            str(linha["timeouts_csv"]),
-            str(linha["perdas_simuladas_csv"]),
-            linha["duracao_s"],
-            linha["md5_ok"],
-        ]) + " |")
-
-    markdown.extend(["", "MD5 recebido:"])
-
-    for linha in linhas:
-        markdown.append(
-            f"- {linha['protocolo']} / {linha['arquivo']}: "
-            f"`{linha['md5']}`"
-        )
-
-    caminho_md = os.path.join(pasta, "tabela_comparativa.md")
-
-    with open(caminho_md, "w", encoding="utf-8") as f:
-        f.write("\n".join(markdown) + "\n")
-
-    print(f"Tabela CSV: {caminho_csv}")
-    print(f"Tabela Markdown: {caminho_md}")
-    print()
-    print("\n".join(markdown))
+    Analise_completa(args.dir, args.protocol)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
