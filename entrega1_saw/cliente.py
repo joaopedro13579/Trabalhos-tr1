@@ -18,11 +18,9 @@ import os
 import socket
 import sys
 import time
-
+import random
 
 BUFFER_SIZE = 65507
-
-
 class ClienteSAW:
 
     def __init__(self, args):
@@ -33,7 +31,7 @@ class ClienteSAW:
         self.timeout = args.timeout
         self.max_tentativas = args.max_tentativas
         self.pasta_saida = args.out
-
+        self.error=args.error
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(self.timeout)
 
@@ -157,8 +155,13 @@ class ClienteSAW:
 
                     campos = self.parse_campos(cabecalho)
                     if "seq" in campos and int(campos["seq"]) != seq:
-                        # DATA duplicado/atrasado de um REQ anterior
                         continue
+
+                    if self.error_introduction():
+                        print(f"seq={seq}: DATA descartado pela simulação")
+                        perda_simulada = 1
+                        continue
+
                     break
                 break
 
@@ -184,7 +187,11 @@ class ClienteSAW:
             "t_rel_s": t_fim - self.t0,
         }
         return payload, metricas
-
+    def error_introduction(self):
+        if random.random() < self.error:
+            return True
+        else:
+            return False
     def executar(self):
         os.makedirs(self.pasta_saida, exist_ok=True)
         print(f"=== RDT-UnB SAW | {self.servidor[0]}:{self.servidor[1]} "
@@ -273,30 +280,269 @@ class ClienteSAW:
 
         return ok
 
+class ClienteGBN(ClienteSAW):
+    """Cliente Go-Back-N baseado no protocolo REQ/DATA/ACK do ClienteSAW."""
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.window = getattr(args, "window", 4)
+        print("=====================Go back N=====================")           
+        if self.window < 1:
+            raise ValueError("A janela deve ser maior ou igual a 1")
+
+    def executar_janela(self):
+        self.handshake()
+
+        total = self.total_segments
+        base = 0
+        next_seq = 0
+
+        payloads = [None] * total
+        envios = [0] * total
+        ultimo_envio = [0.0] * total
+        retransmissoes = [0] * total
+
+        while base < total:
+            # Preenche a janela de envio.
+            while next_seq < total and next_seq < base + self.window:
+                req = f"REQ|seq={next_seq}".encode()
+                self.sock.sendto(req, self.servidor)
+
+                envios[next_seq] += 1
+                ultimo_envio[next_seq] = time.perf_counter()
+                next_seq += 1
+
+            # Espera pela resposta do segmento-base.
+            restante = (
+                ultimo_envio[base] + self.timeout - time.perf_counter()
+            )
+
+            try:
+                if restante <= 0:
+                    raise socket.timeout
+
+                self.sock.settimeout(restante)
+                dados, _ = self.sock.recvfrom(65507)
+
+            except socket.timeout:
+                # Go-Back-N: reenvia todos os segmentos pendentes.
+                for seq in range(base, next_seq):
+                    if envios[seq] >= self.max_tentativas:
+                        raise RuntimeError(
+                            f"Limite de tentativas excedido no segmento {seq}"
+                        )
+
+                    req = f"REQ|seq={seq}".encode()
+                    self.sock.sendto(req, self.servidor)
+
+                    envios[seq] += 1
+                    retransmissoes[seq] += 1
+                    ultimo_envio[seq] = time.perf_counter()
+
+                continue
+
+            if not dados.startswith(b"DATA|"):
+                continue
+
+            try:
+                cabecalho, payload = self.separar_data(dados)
+                campos = self.parse_campos(cabecalho)
+                seq = int(campos["seq"])
+            except (ValueError, KeyError):
+                continue
+
+
+            if seq != base:
+                continue
+
+            # Simula a perda do pacote DATA antes de processá-lo.
+            if self.error_introduction():
+                print(f"GBN: segmento {seq} descartado pela simulação de perda")
+                continue
+
+            payloads[seq] = payload
+
+            # Confirma o segmento recebido.
+            self.sock.sendto(self.montar_ack(seq), self.servidor)
+
+            print(f"GBN: segmento {seq} recebido")
+
+            # Avança a base da janela.
+            base += 1
+        return payloads, retransmissoes
+class ClienteSR(ClienteSAW):
+    """Cliente Selective Repeat baseado no protocolo REQ/DATA/ACK."""
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.window = getattr(args, "window", 4)
+        print("=====================Selective Repete=====================")
+        if self.window < 1:
+            raise ValueError("A janela deve ser maior ou igual a 1")
+
+    def executar_janela(self):
+        self.handshake()
+
+        total = self.total_segments
+        base = 0
+        next_seq = 0
+
+        payloads = [None] * total
+        envios = [0] * total
+        ultimo_envio = [0.0] * total
+        retransmissoes = [0] * total
+
+        while base < total:
+            # Preenche a janela com novas solicitações.
+            while next_seq < total and next_seq < base + self.window:
+                req = f"REQ|seq={next_seq}".encode()
+                self.sock.sendto(req, self.servidor)
+
+                envios[next_seq] += 1
+                ultimo_envio[next_seq] = time.perf_counter()
+                next_seq += 1
+
+            # Calcula o prazo mais próximo entre os segmentos pendentes.
+            pendentes = [
+                seq for seq in range(base, next_seq)
+                if payloads[seq] is None
+            ]
+
+            if not pendentes:
+                while base < total and payloads[base] is not None:
+                    base += 1
+                continue
+
+            prazo = min(
+                ultimo_envio[seq] + self.timeout
+                for seq in pendentes
+            )
+
+            restante = prazo - time.perf_counter()
+
+            try:
+                if restante <= 0:
+                    raise socket.timeout
+
+                self.sock.settimeout(restante)
+                dados, _ = self.sock.recvfrom(65507)
+
+            except socket.timeout:
+                agora = time.perf_counter()
+
+                # SR: retransmite somente os segmentos cujo prazo expirou.
+                for seq in pendentes:
+                    expirou = (
+                        ultimo_envio[seq] + self.timeout <= agora
+                    )
+
+                    if not expirou:
+                        continue
+
+                    if envios[seq] >= self.max_tentativas:
+                        raise RuntimeError(
+                            f"Limite de tentativas excedido no segmento {seq}"
+                        )
+
+                    req = f"REQ|seq={seq}".encode()
+                    self.sock.sendto(req, self.servidor)
+
+                    envios[seq] += 1
+                    retransmissoes[seq] += 1
+                    ultimo_envio[seq] = time.perf_counter()
+
+                continue
+
+            if not dados.startswith(b"DATA|"):
+                continue
+
+            try:
+                cabecalho, payload = self.separar_data(dados)
+                campos = self.parse_campos(cabecalho)
+                seq = int(campos["seq"])
+            except (ValueError, KeyError):
+                continue
+
+            if not 0 <= seq < total:
+                continue
+
+            # Segmento já recebido: confirma novamente, sem duplicá-lo.
+            if payloads[seq] is not None:
+                self.sock.sendto(self.montar_ack(seq), self.servidor)
+                continue
+
+            # Aceita segmentos dentro da janela corrente.
+            if seq < base or seq >= base + self.window:
+                continue
+
+            # Guarda mesmo se o segmento chegar fora de ordem.
+            payloads[seq] = payload
+
+            self.sock.sendto(self.montar_ack(seq), self.servidor)
+
+            print(f"SR: segmento {seq} recebido e armazenado")
+
+            # Avança a base apenas quando a sequência estiver completa.
+            while base < total and payloads[base] is not None:
+                base += 1
+
+        return payloads, retransmissoes
 
 def main():
-    p = argparse.ArgumentParser(description="Cliente Stop-and-Wait RDT-UnB")
+    p = argparse.ArgumentParser(
+        description="Cliente RDT-UnB: Stop-and-Wait, Go-Back-N e Selective Repeat"
+    )
+
+    p.add_argument(
+        "--protocol",
+        choices=["saw", "gbn", "sr"],
+        default="saw",
+        help="Protocolo: saw, gbn ou sr"
+    )
     p.add_argument("--server", default="137.131.178.229")
     p.add_argument("--port", type=int, default=8080)
-    p.add_argument("--group", required=True, help="ex.: grupo14 (obrigatório)")
+    p.add_argument("--group", required=True, help="ex.: grupo14")
     p.add_argument("--file", default="small", help="small | medium | large")
     p.add_argument("--segment-size", type=int, default=512)
-    p.add_argument("--timeout", type=float, default=1.0,
-                   help="timeout de retransmissão em segundos")
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=1.0,
+        help="Timeout de retransmissão em segundos"
+    )
     p.add_argument("--max-tentativas", type=int, default=20)
+    p.add_argument("--error", type=float, default=1)
     p.add_argument("--out", default="resultados")
+    p.add_argument(
+        "--window",
+        type=int,
+        choices=[1, 4, 8, 16],
+        default=4,
+        help="Tamanho da janela para GBN ou SR"
+    )
+
     args = p.parse_args()
 
     try:
-        ok = ClienteSAW(args).executar()
+        if args.protocol == "gbn":
+            cliente = ClienteGBN(args)
+        elif args.protocol == "sr":
+            cliente = ClienteSR(args)
+        else:
+            cliente = ClienteSAW(args)
+
+        ok = cliente.executar()
+
     except KeyboardInterrupt:
         print("\nInterrompido.")
         sys.exit(130)
+
     except Exception as erro:
         print(f"ERRO: {erro}")
         sys.exit(1)
 
     sys.exit(0 if ok else 2)
+
 
 
 if __name__ == "__main__":
