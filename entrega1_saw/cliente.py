@@ -280,13 +280,19 @@ class ClienteSAW:
         print(f"Thr teórico  : {thr_teorico / 1e3:.2f} kbps")
         print(f"Thr medido   : {thr_medido / 1e3:.2f} kbps ({100 * resumo['eficiencia']:.1f}% do teórico)")
         print(f"CSV: {caminho_csv}\nJSON: {caminho_json}\nBIN: {caminho_bin}")
-        return ok
-
+        if ok:
+            self.enviar_fin(checksum_recebido)
+        return ok   
+    def enviar_fin(self, checksum):
+        mensagem = f"FIN|checksum={checksum}".encode("utf-8")
+        self.sock.sendto(mensagem, self.servidor)
+        print(f"[FIN] Enviado: FIN|checksum={checksum}")
     def executar(self):
         try:
             self.handshake()
             self.iniciar_metricas()
             self.transferir()
+
             return self.salvar_resultados()
         finally:
             self.sock.close()
