@@ -1,2 +1,6 @@
 protocolo,janela,perda,status
 saw,1,0.0,OK
+saw,1,0.05,ERRO: Limite de tentativas excedido no segmento 1182
+saw,1,0.1,ERRO: Servidor não respondeu ao HELLO
+gbn,4,0.0,ERRO: Limite de tentativas excedido no segmento 0
+gbn,4,0.05,ERRO: Limite de tentativas excedido no segmento 1

@@ -1,0 +1,8 @@
+protocolo,janela,arquivo,p00_throughput_kbps,p00_retransmissoes,p00_duracao_s,p00_md5_ok,p05_throughput_kbps,p05_retransmissoes,p05_duracao_s,p05_md5_ok,p10_throughput_kbps,p10_retransmissoes,p10_duracao_s,p10_md5_ok
+SAW,1,large,139.075,1,603.17,True,20.795,1114,4033.992,True,13.226,2239,6342.516,True
+GBN,4,large,542.277,8,154.692,True,30.928,4652,2712.29,True,,,,
+GBN,8,large,,,,,,,,,,,,
+GBN,16,large,1640.956,96,51.12,True,,,,,17.243,38540,4864.861,True
+SR,4,large,,,,,,,,,,,,
+SR,8,large,,,,,,,,,,,,
+SR,16,large,,,,,,,,,,,,

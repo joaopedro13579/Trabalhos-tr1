@@ -15,8 +15,28 @@ COLUNAS = [
     "seq", "bytes", "rtt_ms", "tempo_ciclo_ms", "throughput_bps",
     "retransmissoes", "timeout_ocorrido", "perda_simulada", "simulated_loss", "t_rel_s",
 ]
+import csv
+from pathlib import Path
 
 
+def carregar_experimentos_concluidos(caminho_csv):
+    concluidos = set()
+
+    if not caminho_csv.exists():
+        return concluidos
+
+    with open(caminho_csv, "r", encoding="utf-8", newline="") as f:
+        for linha in csv.DictReader(f):
+            if linha.get("status", "").strip().upper() != "OK":
+                continue
+
+            protocolo = linha["protocolo"].strip().lower()
+            janela = int(linha["janela"])
+            perda = round(float(linha["perda"]), 4)
+
+            concluidos.add((protocolo, janela, perda))
+
+    return concluidos
 class ClienteSAW:
     protocolo = "saw"
 
@@ -349,7 +369,7 @@ def executar_todos(args):
     """
     from copy import copy
     from analisar import Analise_completa
-
+    concluidos=carregar_experimentos_concluidos(Path(args.out) / "status_experimentos.csv")
     cenarios = [("saw", 1)] + [
         (protocolo, janela)
         for protocolo in ("gbn", "sr")
@@ -361,6 +381,12 @@ def executar_todos(args):
 
     for protocolo, janela in cenarios:
         for perda in perdas:
+            if (protocolo, janela, round(perda, 4)) in concluidos:
+                print(f"Pulando cenário já concluído: {protocolo.upper()} "
+                      f"janela={janela} perda={perda:.0%}")
+                resultados.append({"protocolo": protocolo, "janela": janela,
+                                   "perda": perda, "status": "OK"})
+                continue
             atual = copy(args)
             atual.protocol = protocolo
             atual.window = janela
