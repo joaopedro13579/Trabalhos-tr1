@@ -13,14 +13,14 @@
   "checksum_esperado": "6f0e0f89a24e7a230cc3a001e06c95ea",
   "checksum_recebido": "6f0e0f89a24e7a230cc3a001e06c95ea",
   "checksum_ok": true,
-  "duracao_s": 5.971873982009129,
-  "rtt_medio_ms": 27.070444247016212,
-  "rtt_min_ms": 24.630312007502653,
-  "rtt_max_ms": 40.94413299753796,
-  "retransmissoes_total": 5,
+  "duracao_s": 3.825096911008586,
+  "rtt_medio_ms": 29.272419977949937,
+  "rtt_min_ms": 25.61782799602952,
+  "rtt_max_ms": 47.51653400307987,
+  "retransmissoes_total": 0,
   "perdas_simuladas_total": 0,
   "simulated_loss_total": 0,
-  "throughput_teorico_bps": 151308.9317125438,
-  "throughput_medido_bps": 1404686.0374601886,
-  "eficiencia": 9.283563247467812
+  "throughput_teorico_bps": 139926.93474217018,
+  "throughput_medido_bps": 2193044.567278199,
+  "eficiencia": 15.672783594660384
 }

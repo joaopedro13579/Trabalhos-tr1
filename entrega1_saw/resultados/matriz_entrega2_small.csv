@@ -1,8 +1,8 @@
 protocolo,janela,arquivo,p00_throughput_kbps,p00_retransmissoes,p00_duracao_s,p00_md5_ok,p05_throughput_kbps,p05_retransmissoes,p05_duracao_s,p05_md5_ok,p10_throughput_kbps,p10_retransmissoes,p10_duracao_s,p10_md5_ok
-SAW,1,small,,,,,,,,,,,,
-GBN,4,small,,,,,,,,,,,,
-GBN,8,small,822.229,32,10.202,True,120.947,1004,69.358,True,63.65,1978,131.792,True
-GBN,16,small,1896.477,0,4.423,True,139.722,1773,60.038,True,65.852,4008,127.386,True
-SR,4,small,571.586,0,14.676,True,126.693,112,66.212,True,67.056,266,125.098,True
-SR,8,small,1212.981,0,6.916,True,167.43,109,50.102,True,107.6,238,77.961,True
-SR,16,small,1404.686,5,5.972,True,223.386,111,37.552,True,151.393,222,55.41,True
+SAW,1,small,143.396,0,58.499,True,,,,,,,,
+GBN,4,small,,,,,,,,,60.61,968,138.404,True
+GBN,8,small,1216.907,0,6.893,True,101.264,1190,82.839,True,63.65,1978,131.792,True
+GBN,16,small,807.346,208,10.39,True,138.264,1848,60.671,True,54.008,4880,155.321,True
+SR,4,small,524.524,3,15.993,True,135.034,112,62.122,True,76.664,242,109.421,True
+SR,8,small,997.085,2,8.413,True,153.202,136,54.755,True,110.32,234,76.039,True
+SR,16,small,2193.045,0,3.825,True,260.287,86,32.228,True,159.022,219,52.751,True
